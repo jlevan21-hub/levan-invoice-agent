@@ -1,0 +1,15 @@
+# Credentials & secrets
+Keys.txt
+*.env
+.env*
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Build logs
+rebuild.log
+
+# OS
+.DS_Store
+Thumbs.db

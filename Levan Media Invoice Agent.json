@@ -1,0 +1,1015 @@
+{
+  "name": "Levan Media Invoice Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyX",
+              "unit": "minutes"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "labelIds": [
+            "Label_4391428663519410485"
+          ],
+          "q": "-label:processed -label:auto-rejected newer_than:2d",
+          "readStatus": "both"
+        },
+        "options": {
+          "dataPropertyAttachmentsPrefixName": "attachment_",
+          "downloadAttachments": true
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ],
+      "id": "304f08c9-5c9e-4d46-bb27-c935f6a9ff3f",
+      "name": "Gmail Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "cGRUZF8BB9Ls66P7",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "760be43a-e452-4e7b-afc2-40b6b59add50",
+              "leftValue": "={{ Object.values($binary || {}).some(b => b && (b.mimeType === 'application/pdf' || (b.mimeType && b.mimeType.startsWith('image/')))) }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        224,
+        0
+      ],
+      "id": "6e182c10-649f-4512-a433-33d81d22aa91",
+      "name": "Check if attachment is an Invoice PDF"
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $('Gmail Trigger').item.json.id }}",
+        "labelIds": [
+          "Label_4846901742044418660"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        448,
+        96
+      ],
+      "id": "eb0fff8a-a70c-4afd-ab0f-00f754c8e470",
+      "name": "Add auto-reject label for non-invoice emails",
+      "webhookId": "271ac0f2-749a-4f7a-9180-d88f90e94875",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "cGRUZF8BB9Ls66P7",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node 3 — Fan out one item per PDF (or image) attachment\nconst results = [];\n\nfor (const item of $input.all()) {\n  const binary = item.binary || {};\n  const keys = Object.keys(binary);\n\n  // Prefer PDFs. Only fall back to images if no PDFs at all — most image\n  // attachments on invoice emails are logos in the signature, not the invoice.\n  let chosenKeys = keys.filter((k) => binary[k]?.mimeType === 'application/pdf');\n  if (chosenKeys.length === 0) {\n    chosenKeys = keys.filter(\n      (k) => binary[k]?.mimeType && binary[k].mimeType.startsWith('image/')\n    );\n  }\n\n  if (chosenKeys.length === 0) {\n    // Shouldn't happen if Node 2's filter is working, but bail safely\n    continue;\n  }\n\n  chosenKeys.forEach((key, index) => {\n    const chosen = binary[key];\n    results.push({\n      json: {\n        ...item.json,\n        _pdfFilename: chosen.fileName || `invoice_${index + 1}.pdf`,\n        _pdfMimeType: chosen.mimeType,\n        _attachmentIndex: index,        // 0-based position of this PDF within the email\n        _attachmentCount: chosenKeys.length, // total PDFs pulled from this email\n      },\n      // Reassign under the known key `data` so Node 4 always finds it at item.binary.data\n      binary: {\n        data: chosen,\n      },\n    });\n  });\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        -96
+      ],
+      "id": "7acc603a-3226-457b-ae22-a25d54188614",
+      "name": "Fan out each PDF attachment",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node 4 — PDF → PNG page images (for vision models)\nconst { execSync } = require('child_process');\nconst fs = require('fs');\nconst path = require('path');\nconst os = require('os');\n\nconst DPI = 150;\nconst MAX_PAGES = 50;\nconst LD = '/opt/poppler-libs/usr-lib:/opt/poppler-libs/lib';\nconst results = [];\n\nconst items = $input.all();\n\nfor (let i = 0; i < items.length; i++) {\n  const item = items[i];\n\n  const binaryKey = Object.keys(item.binary || {}).find(\n    (k) => item.binary[k].mimeType === 'application/pdf'\n  ) || 'data';\n  const binaryMeta = item.binary?.[binaryKey];\n\n  if (!binaryMeta) {\n    results.push({ json: { ...item.json, skipped: true, reason: 'no PDF binary' } });\n    continue;\n  }\n\n  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'invoice-'));\n  const pdfPath = path.join(workDir, 'input.pdf');\n  const outPrefix = path.join(workDir, 'page');\n\n  try {\n    // IMPORTANT — use the helper, not Buffer.from(binaryMeta.data, 'base64'):\n    // n8n 1.x stores binaries on the filesystem by default, so binaryMeta.data\n    // is a reference ID, NOT a base64 payload. Running Buffer.from(ref, 'base64')\n    // produces garbage bytes and pdftoppm reports \"Couldn't find trailer\n    // dictionary\". The helper handles both in-memory and filesystem modes.\n    const pdfBuffer = await this.helpers.getBinaryDataBuffer(i, binaryKey);\n    fs.writeFileSync(pdfPath, pdfBuffer);\n\n    // IMPORTANT: n8n's Code node runs in a sandboxed task runner that does\n    // NOT expose the `process` global, and the container's LD_LIBRARY_PATH\n    // (set via ENV in Dockerfile.n8n) does NOT reach child processes spawned\n    // by execSync. Fix: prepend LD_LIBRARY_PATH inline in the shell command —\n    // execSync uses /bin/sh -c by default, so inline env assignment works\n    // identically to a terminal prefix.\n    execSync(\n      `LD_LIBRARY_PATH=${LD} /usr/local/bin/pdftoppm -png -r ${DPI} -l ${MAX_PAGES} \"${pdfPath}\" \"${outPrefix}\"`,\n      { stdio: 'pipe' }\n    );\n\n    const pngFiles = fs\n      .readdirSync(workDir)\n      .filter((f) => f.endsWith('.png'))\n      .sort();\n\n    const images = pngFiles.map((f) =>\n      fs.readFileSync(path.join(workDir, f)).toString('base64')\n    );\n\n    results.push({\n      json: {\n        ...item.json,\n        filename: binaryMeta.fileName || 'invoice.pdf',\n        pageCount: images.length,\n        images,\n      },\n      binary: item.binary,\n    });\n  } catch (err) {\n    results.push({\n      json: {\n        ...item.json,\n        error: true,\n        errorMessage: `PDF conversion failed: ${err.message}`,\n      },\n      binary: item.binary,\n    });\n  } finally {\n    try {\n      for (const f of fs.readdirSync(workDir)) {\n        fs.unlinkSync(path.join(workDir, f));\n      }\n      fs.rmdirSync(workDir);\n    } catch (_) { /* best effort */ }\n  }\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        -96
+      ],
+      "id": "24cc29a0-4fd4-47a7-9ffd-e27891f58ebc",
+      "name": "Convert PDF to Image"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Lookup Vendor Hint drops binary data. Restore it from Gmail Trigger\n// so Fan out can access the PDF attachments.\nconst gmailItem = $('Gmail Trigger').first();\nreturn [{\n  json: { ...$input.first().json },\n  binary: gmailItem.binary,\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        -96
+      ],
+      "id": "c5d6e7f8-a9b0-1234-cdef-567890abcdef",
+      "name": "Restore Gmail Binary"
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all().map(item => {\n  const images = item.json.images || [];\n  const extractionHint = item.json['Extraction Hint'] || 'none';\n\n  const textPart = {\n    text: 'You are an invoice-processing assistant for Levan Media & Marketing. Look at ALL the attached page images and extract every invoice found. Some invoices may span multiple pages — treat consecutive pages belonging to the same invoice as a single invoice.\\n\\nVendor hint (may be empty): ' + extractionHint + '\\n\\nReturn a JSON array where each element is one invoice. Each element must have:\\n- is_invoice: boolean — true only if clearly a vendor invoice\\n- vendor_name: string\\n- sender_email: string or null\\n- invoice_number: string — copy EXACTLY the value next to \\'Invoice #\\', digit for digit\\n- invoice_date: YYYY-MM-DD\\n- due_date: YYYY-MM-DD or null\\n- payment_terms: string or null\\n- description: string — one-line summary\\n- gross_sale: number — subtotal BEFORE discount\\n- discount_adjustment: number — 0 if none\\n- total_due: number\\n- advertiser: string\\n- confidence: number 0-1\\n\\nOmit non-invoice pages. Return ONLY a valid JSON array — no prose, no markdown, no code fences. Numbers as plain numbers, no currency symbols.'\n  };\n\n  return {\n    json: {\n      requestBody: {\n        contents: [{ parts: [textPart, ...images.map(img => ({ inline_data: { mime_type: 'image/png', data: img } }))] }],\n        generationConfig: { temperature: 0.1, response_mime_type: 'application/json' }\n      }\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1232,
+        -96
+      ],
+      "id": "d7e8f9a0-b1c2-3456-def0-123456789abc",
+      "name": "Build Gemini Request"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.requestBody }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1344,
+        -96
+      ],
+      "id": "a8d6048c-aa1e-48d1-8e82-2d2dc771ded9",
+      "name": "HTTP Request",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WNThfpWxRjiehs11",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Vendor Hints",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Sender Domain",
+              "lookupValue": "={{ $('Gmail Trigger').first().json.from.value[0].address.split('@')[1] }}"
+            }
+          ]
+        },
+        "options": {
+          "dataLocationOnSheet": {
+            "values": {
+              "rangeDefinition": "detectAutomatically",
+              "readRowsUntil": "firstEmptyRow"
+            }
+          },
+          "returnFirstMatch": true
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        448,
+        -96
+      ],
+      "id": "9c644007-c99d-4afb-a8e4-e2387c5908f6",
+      "name": "Lookup Vendor Hint",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "zmA3lB23Srv15Wt6",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = [];\n\nconst allItems = $input.all();\nfor (let sourceIndex = 0; sourceIndex < allItems.length; sourceIndex++) {\n  const item = allItems[sourceIndex];\n  let invoiceArray;\n\n  try {\n    const candidate = item.json.candidates?.[0];\n    const finishReason = candidate?.finishReason;\n    const raw = candidate?.content?.parts?.[0]?.text;\n\n    if (!raw) {\n      throw new Error(\n        `Gemini response missing candidates[0].content.parts[0].text — finishReason was \"${finishReason}\".`\n      );\n    }\n    if (finishReason && finishReason !== 'STOP') {\n      throw new Error(`Gemini finishReason=\"${finishReason}\" — output may be incomplete.`);\n    }\n\n    const parsed = JSON.parse(raw);\n    // Handle both array response (multi-invoice) and single object (legacy)\n    invoiceArray = Array.isArray(parsed) ? parsed : [parsed];\n  } catch (err) {\n    results.push({\n      json: {\n        route: 'error',\n        errorMessage: `Failed to parse Gemini response: ${err.message}`,\n        rawResponse: item.json,\n      },\n    });\n    continue;\n  }\n\n  for (const data of invoiceArray) {\n    if (data.is_invoice === false) {\n      // silently skip non-invoice pages — they are expected in multi-invoice PDFs\n      continue;\n    }\n\n    const requiredFields = ['vendor_name', 'invoice_number', 'gross_sale', 'total_due'];\n    const missing = requiredFields.filter(\n      (f) => data[f] === null || data[f] === undefined || data[f] === ''\n    );\n\n    if (missing.length > 0) {\n      results.push({\n        json: {\n          route: 'error',\n          _sourceIndex: sourceIndex,\n          errorMessage: `Missing required fields: ${missing.join(', ')}`,\n          partialData: data,\n        },\n      });\n      continue;\n    }\n\n    const gross = Number(data.gross_sale) || 0;\n    const totalDue = Number(data.total_due) || 0;\n    const discount = data.discount_adjustment != null\n      ? Number(data.discount_adjustment)\n      : Math.max(0, gross - totalDue);\n\n    results.push({\n      json: {\n        route: 'invoice',\n        _sourceIndex: sourceIndex,\n        row: {\n          'Date Received': new Date().toISOString().split('T')[0],\n          'Vendor Name': data.vendor_name,\n          'Invoice Number': data.invoice_number,\n          'Invoice Date': data.invoice_date || '',\n          'Due Date': data.due_date || '',\n          'Description': data.description || '',\n          'Gross Sale': gross,\n          'Discount/Adjustment': discount,\n          'Payment Terms': data.payment_terms || '',\n          'Status': 'Pending Review',\n          'Advertiser': data.advertiser || '',\n          'Sender Email': data.sender_email\n            || $('Gmail Trigger').first().json.from?.value?.[0]?.address\n            || '',\n          'Confidence': data.confidence || 0,\n        },\n        extractedData: data,\n      },\n    });\n  }\n}\n\nreturn results;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1568,
+        -96
+      ],
+      "id": "64659dc4-0fdd-42fd-b892-22dfef7b8ee9",
+      "name": "Parse & Validate"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "invoice",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "71cdb196-a241-4dad-814e-2a46e00c66dc"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "5ba01881-66a9-451c-b198-f1a51541988b",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "not_invoice",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "180b8ef8-434b-4d65-acd8-ffb2d9601188",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "error",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1792,
+        -112
+      ],
+      "id": "9c44faae-6537-4e5c-9294-483d6fcbe119",
+      "name": "Route Attachment Type"
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $('Gmail Trigger').item.json.id }}",
+        "labelIds": [
+          "Label_4846901742044418660"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1792,
+        -96
+      ],
+      "id": "09a983ff-d398-4b27-9145-d581e117bc30",
+      "name": "Add auto-reject label",
+      "webhookId": "e99b48a6-a3da-4a74-b964-cfecd513e330",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "cGRUZF8BB9Ls66P7",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 164975054,
+          "mode": "list",
+          "cachedResultName": "Needs Attention",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A/edit#gid=164975054"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $('Gmail Trigger').item.json.headers.date }}",
+            "Error": "={{ $json.errorMessage }}",
+            "Sender": "={{ $('Gmail Trigger').item.json.headers.from }}",
+            "Subject": "={{ $('Gmail Trigger').item.json.headers.subject }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Sender",
+              "displayName": "Sender",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Subject",
+              "displayName": "Subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Error",
+              "displayName": "Error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "File Link",
+              "displayName": "File Link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1792,
+        96
+      ],
+      "id": "6f7fed13-dde1-48ac-be56-4a6c25d92846",
+      "name": "Add Needs Attention Row",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "zmA3lB23Srv15Wt6",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $('Gmail Trigger').item.json.id }}",
+        "labelIds": [
+          "Label_7667714382134091806"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2016,
+        96
+      ],
+      "id": "6feca95c-7068-4bf1-93b4-01653eb883d8",
+      "name": "Add label to message",
+      "webhookId": "459d75b8-721d-43b6-9228-5d0910332f1e",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "cGRUZF8BB9Ls66P7",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "jlevan21@gmail.com",
+        "subject": "Incoming Invoice Needs Review",
+        "message": "Check the Needs Attention tab in Invoice File",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2240,
+        96
+      ],
+      "id": "6d286b4d-79e9-4cd1-b239-76d159a84162",
+      "name": "Send a message",
+      "webhookId": "4c602518-a8d5-480a-a5e6-46fddd02b613",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "cGRUZF8BB9Ls66P7",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const fanOutItems = $('Fan out each PDF attachment').all();\nreturn $input.all().map((item) => ({\n  json: item.json,\n  binary: fanOutItems[item.json._sourceIndex ?? 0].binary,\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        -288
+      ],
+      "id": "b3c4d5e6-f7a8-9012-bcde-f34567890abc",
+      "name": "Restore PDF Binary"
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "data",
+        "name": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Vendor Name'] }} — {{ $('Parse & Validate').all()[$itemIndex].json.row['Invoice Number'] }} — {{ $('Parse & Validate').all()[$itemIndex].json.row['Invoice Date'] }}.pdf",
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list",
+          "cachedResultName": "My Drive",
+          "cachedResultUrl": "https://drive.google.com/drive/my-drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "1Oki4NbwZmAV90CC77WUKCiK3K-P0Znrx",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        2016,
+        -288
+      ],
+      "id": "37ab8c7f-9423-406e-817d-e420cf8d79d8",
+      "name": "Upload to Ready for Review",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "1yHaR8XMHGZVCF7C",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Invoices",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Invoice Number": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Invoice Number'] }}",
+            "Date Received": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Date Received'] }}",
+            "Vendor Name": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Vendor Name'] }}",
+            "Invoice Date": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Invoice Date'] }}",
+            "Due Date": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Due Date'] }}",
+            "Description": "={{ $('Parse & Validate').all()[$itemIndex].json.row.Description }}",
+            "Gross Sale": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Gross Sale'] }}",
+            "Payment Terms": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Payment Terms'] }}",
+            "Status": "={{ $('Parse & Validate').all()[$itemIndex].json.row.Status }}",
+            "File Link": "={{ $json.webViewLink }}",
+            "Sender Email": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Sender Email'] }}",
+            "Confidence": "={{ $('Parse & Validate').all()[$itemIndex].json.row.Confidence }}",
+            "Commission Amount": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Discount/Adjustment'] }}",
+            "Commission Rate": "==IFERROR(VLOOKUP(B2,'Commission Schedule'!A:B,2,FALSE),0.15)",
+            "Advertiser": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Advertiser'] }}"
+          },
+          "matchingColumns": [
+            "Invoice Number"
+          ],
+          "schema": [
+            {
+              "id": "Date Received",
+              "displayName": "Date Received",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Vendor Name",
+              "displayName": "Vendor Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Invoice Number",
+              "displayName": "Invoice Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Invoice Date",
+              "displayName": "Invoice Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Due Date",
+              "displayName": "Due Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Advertiser",
+              "displayName": "Advertiser",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Description",
+              "displayName": "Description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Gross Sale",
+              "displayName": "Gross Sale",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Discount/Adjustment",
+              "displayName": "Discount/Adjustment",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Net Sale",
+              "displayName": "Net Sale",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "Commission Rate",
+              "displayName": "Commission Rate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Commission Amount",
+              "displayName": "Commission Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Payment Terms",
+              "displayName": "Payment Terms",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "File Link",
+              "displayName": "File Link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Sender Email",
+              "displayName": "Sender Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Confidence",
+              "displayName": "Confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2240,
+        -288
+      ],
+      "id": "6648b9e3-cc0a-4898-afce-6e1331335e6b",
+      "name": "Append or update row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "zmA3lB23Srv15Wt6",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $('Gmail Trigger').item.json.id }}",
+        "message": "=Thank you for sending invoice {{ $('Parse & Validate').all()[$itemIndex].json.row['Invoice Number'] }}. This has been received and is now being processed. You'll hear from us if we need any clarification. \n\nThanks,\nLevan Media & Marketing",
+        "options": {
+          "ccList": "jlevan21@gmail.com",
+          "senderName": "Levan Media & Marketing"
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2464,
+        -288
+      ],
+      "id": "9b766d26-5f26-45e2-9719-6e6035b2ea0b",
+      "name": "Reply to Invoice Email",
+      "webhookId": "a5a39f67-efd8-487a-9140-da3903ce7d7c",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "cGRUZF8BB9Ls66P7",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $('Gmail Trigger').item.json.id }}",
+        "labelIds": [
+          "Label_7931453060696686966"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2688,
+        -288
+      ],
+      "id": "427fe83c-f042-4788-9277-c4fe2fdb9974",
+      "name": "Add processed label to email",
+      "webhookId": "695ef6e8-ec07-4512-b99f-1526b5fb7adc",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "cGRUZF8BB9Ls66P7",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Check if attachment is an Invoice PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check if attachment is an Invoice PDF": {
+      "main": [
+        [
+          {
+            "node": "Lookup Vendor Hint",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add auto-reject label for non-invoice emails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lookup Vendor Hint": {
+      "main": [
+        [
+          {
+            "node": "Restore Gmail Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Gmail Binary": {
+      "main": [
+        [
+          {
+            "node": "Fan out each PDF attachment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fan out each PDF attachment": {
+      "main": [
+        [
+          {
+            "node": "Convert PDF to Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert PDF to Image": {
+      "main": [
+        [
+          {
+            "node": "Build Gemini Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Gemini Request": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Parse & Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Validate": {
+      "main": [
+        [
+          {
+            "node": "Route Attachment Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Attachment Type": {
+      "main": [
+        [
+          {
+            "node": "Restore PDF Binary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add auto-reject label",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add Needs Attention Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Needs Attention Row": {
+      "main": [
+        [
+          {
+            "node": "Add label to message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add label to message": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore PDF Binary": {
+      "main": [
+        [
+          {
+            "node": "Upload to Ready for Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload to Ready for Review": {
+      "main": [
+        [
+          {
+            "node": "Append or update row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append or update row in sheet": {
+      "main": [
+        [
+          {
+            "node": "Reply to Invoice Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply to Invoice Email": {
+      "main": [
+        [
+          {
+            "node": "Add processed label to email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "12677d9f-bf15-4bcb-a045-a9ce4e64bfc0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7739a5dbe8beb5e0b2eee3b717dbe2b7646f81c766644edf3ed475a32bb42e1a"
+  },
+  "id": "9De4G4Mvn6PmkT2b",
+  "tags": []
+}

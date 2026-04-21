@@ -1,0 +1,69 @@
+services:
+  n8n:
+    build:
+      context: .
+      dockerfile: Dockerfile.n8n
+    container_name: levan-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - GENERIC_TIMEZONE=America/New_York
+      - TZ=America/New_York
+      - NODE_FUNCTION_ALLOW_BUILTIN=child_process,fs,path,os,crypto
+      - NODE_FUNCTION_ALLOW_EXTERNAL=*
+      # Tell n8n the public URL — you set this after getting the cloudflared
+      # URL from its log. Leave empty for first boot; update + restart once
+      # you have the tunnel URL.
+      - WEBHOOK_URL=${TUNNEL_URL:-}
+      - N8N_EDITOR_BASE_URL=${TUNNEL_URL:-}
+      # Trust Cloudflare's forwarded headers so n8n knows it's serving HTTPS
+      # on the tunnel host. Without these, OAuth + editor often 404 or 403.
+      - N8N_PROXY_HOPS=1
+      - N8N_SECURE_COOKIE=false
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      - ollama
+    networks:
+      - levan-network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: levan-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - levan-network
+    # Uncomment below for NVIDIA GPU acceleration:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  # Cloudflare quick tunnel — gives us a free public HTTPS URL for Google OAuth.
+  # No Cloudflare account needed. URL changes on every restart; read it from:
+  #   docker logs levan-tunnel
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: levan-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://n8n:5678
+    depends_on:
+      - n8n
+    networks:
+      - levan-network
+
+volumes:
+  n8n_data:
+  ollama_data:
+
+networks:
+  levan-network:
+    driver: bridge

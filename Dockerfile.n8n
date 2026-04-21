@@ -1,0 +1,59 @@
+# Custom n8n image with pdftoppm for PDF-to-image conversion.
+#
+# n8n's official image is Alpine-based but strips apk from the runtime image
+# for security hardening. So we install poppler-utils into a staging root in
+# a fresh Alpine builder (matching n8n's Alpine version — see below) and
+# copy the complete install tree into the n8n image.
+#
+# IMPORTANT: The Alpine version in the builder stage MUST match n8n's base
+# Alpine version, or you'll get C++ ABI mismatch errors (symbol relocations
+# against libstdc++). Check with:
+#   docker run --rm --entrypoint sh docker.n8n.io/n8nio/n8n:latest -c "cat /etc/os-release"
+# (the hardened image strips /etc/alpine-release, but /etc/os-release remains)
+# and set FROM alpine:X.Y below to the matching VERSION_ID major.minor.
+#
+# Build with:
+#   docker compose down
+#   docker compose build n8n --no-cache
+#   docker compose up -d
+
+# ---- Builder: install poppler-utils into a staging root ----------------
+FROM alpine:3.22 AS builder
+
+# Seed the staging root with apk config BEFORE running apk add --initdb:
+#   * /etc/apk/keys — signing keys apk uses to verify packages
+#   * /etc/apk/repositories — explicitly enable both main AND community
+#     (poppler-utils lives in community; depending on how the builder image
+#     is configured, apk may only see main and fail with
+#     "unable to select packages: poppler-utils (no such package)")
+#
+# --initdb + --root then gives us a complete mini-filesystem with ALL
+# transitive dependencies resolved by apk itself, avoiding the ldd-crawling
+# fragility of the previous approach.
+RUN mkdir -p /stage/etc/apk \
+    && cp -r /etc/apk/keys /stage/etc/apk/keys \
+    && printf '%s\n' \
+         'https://dl-cdn.alpinelinux.org/alpine/v3.22/main' \
+         'https://dl-cdn.alpinelinux.org/alpine/v3.22/community' \
+         > /stage/etc/apk/repositories \
+    && apk add --no-cache --initdb --root /stage poppler-utils \
+    && rm -rf /stage/var/cache /stage/tmp /stage/dev /stage/proc /stage/sys
+
+# ---- Runtime: copy binary + all libs into n8n image --------------------
+FROM docker.n8n.io/n8nio/n8n:latest
+
+USER root
+
+# Drop the full poppler library set into a dedicated directory so we don't
+# collide with n8n's own /usr/lib contents, then tell the dynamic linker
+# where to find them via LD_LIBRARY_PATH.
+COPY --from=builder /stage/usr/bin/pdftoppm /usr/local/bin/pdftoppm
+COPY --from=builder /stage/usr/lib/ /opt/poppler-libs/usr-lib/
+COPY --from=builder /stage/lib/ /opt/poppler-libs/lib/
+
+ENV LD_LIBRARY_PATH=/opt/poppler-libs/usr-lib:/opt/poppler-libs/lib
+
+# Node 4's JS calls /usr/local/bin/pdftoppm explicitly — the COPY above
+# already puts the binary there, so the path is satisfied.
+
+USER node
