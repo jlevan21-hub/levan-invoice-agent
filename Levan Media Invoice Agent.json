@@ -762,7 +762,7 @@
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.2,
       "position": [
-        2464,
+        3360,
         -288
       ],
       "id": "9b766d26-5f26-45e2-9719-6e6035b2ea0b",
@@ -786,7 +786,7 @@
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.2,
       "position": [
-        2688,
+        3584,
         -288
       ],
       "id": "427fe83c-f042-4788-9277-c4fe2fdb9974",
@@ -796,6 +796,287 @@
         "gmailOAuth2": {
           "id": "cGRUZF8BB9Ls66P7",
           "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "name": "Prepare Advertiser Tab",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2464,
+        -288
+      ],
+      "id": "a688f4e8-257f-482a-9c58-c2539ad7577a",
+      "parameters": {
+        "jsCode": "// Sanitize advertiser name for use as a Google Sheets tab name.\n// Sheet tab rules: max 100 chars, no [ ] * ? : / \\\nreturn $input.all().map((item, i) => {\n  const parseItem = $('Parse & Validate').all()[i];\n  const advertiserRaw = parseItem?.json?.row?.Advertiser || 'Unknown Advertiser';\n  const advertiserName = advertiserRaw\n    .replace(/[\\[\\]*?:\\/\\\\]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .substring(0, 100) || 'Unknown Advertiser';\n  return {\n    json: {\n      ...item.json,\n      advertiserName\n    }\n  };\n});"
+      }
+    },
+    {
+      "name": "Create Advertiser Tab",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2688,
+        -288
+      ],
+      "id": "4881e1ac-33e2-404a-80a6-28388f087c82",
+      "continueOnFail": true,
+      "parameters": {
+        "method": "POST",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ requests: [{ addSheet: { properties: { title: $json.advertiserName } } }] }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "zmA3lB23Srv15Wt6",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "name": "Write Advertiser Tab Headers",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        2912,
+        -288
+      ],
+      "id": "8596791f-325e-467f-8cee-cfa4ad26f589",
+      "continueOnFail": true,
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ \"https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A/values/\" + encodeURIComponent(\"'\" + $('Prepare Advertiser Tab').item.json.advertiserName + \"'!A1:Q1\") + \"?valueInputOption=USER_ENTERED\" }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"values\":[[\"Date Received\",\"Vendor Name\",\"Invoice Number\",\"Invoice Date\",\"Due Date\",\"Advertiser\",\"Description\",\"Gross Sale\",\"Discount/Adjustment\",\"Net Sale\",\"Commission Rate\",\"Commission Amount\",\"Payment Terms\",\"Status\",\"File Link\",\"Sender Email\",\"Confidence\"]]}",
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "zmA3lB23Srv15Wt6",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "name": "Append to Advertiser Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3136,
+        -288
+      ],
+      "id": "d6a941eb-373c-4e3d-a3fc-756412dfccf2",
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "={{ $('Prepare Advertiser Tab').item.json.advertiserName }}",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Invoice Number": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Invoice Number'] }}",
+            "Date Received": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Date Received'] }}",
+            "Vendor Name": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Vendor Name'] }}",
+            "Invoice Date": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Invoice Date'] }}",
+            "Due Date": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Due Date'] }}",
+            "Advertiser": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Advertiser'] }}",
+            "Description": "={{ $('Parse & Validate').all()[$itemIndex].json.row.Description }}",
+            "Gross Sale": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Gross Sale'] }}",
+            "Discount/Adjustment": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Discount/Adjustment'] }}",
+            "Net Sale": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Net Sale'] }}",
+            "Commission Rate": "==IFERROR(VLOOKUP(B2,'Commission Schedule'!A:B,2,FALSE),0.15)",
+            "Commission Amount": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Discount/Adjustment'] }}",
+            "Payment Terms": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Payment Terms'] }}",
+            "Status": "={{ $('Parse & Validate').all()[$itemIndex].json.row.Status }}",
+            "File Link": "={{ $json.webViewLink }}",
+            "Sender Email": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Sender Email'] }}",
+            "Confidence": "={{ $('Parse & Validate').all()[$itemIndex].json.row.Confidence }}"
+          },
+          "matchingColumns": [
+            "Invoice Number"
+          ],
+          "schema": [
+            {
+              "id": "Date Received",
+              "displayName": "Date Received",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Vendor Name",
+              "displayName": "Vendor Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Invoice Number",
+              "displayName": "Invoice Number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Invoice Date",
+              "displayName": "Invoice Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Due Date",
+              "displayName": "Due Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Advertiser",
+              "displayName": "Advertiser",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Description",
+              "displayName": "Description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Gross Sale",
+              "displayName": "Gross Sale",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Discount/Adjustment",
+              "displayName": "Discount/Adjustment",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Net Sale",
+              "displayName": "Net Sale",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Commission Rate",
+              "displayName": "Commission Rate",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Commission Amount",
+              "displayName": "Commission Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Payment Terms",
+              "displayName": "Payment Terms",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "File Link",
+              "displayName": "File Link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Sender Email",
+              "displayName": "Sender Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Confidence",
+              "displayName": "Confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "zmA3lB23Srv15Wt6",
+          "name": "Google Sheets account"
         }
       }
     }
@@ -981,7 +1262,7 @@
       "main": [
         [
           {
-            "node": "Reply to Invoice Email",
+            "node": "Prepare Advertiser Tab",
             "type": "main",
             "index": 0
           }
@@ -993,6 +1274,50 @@
         [
           {
             "node": "Add processed label to email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Advertiser Tab": {
+      "main": [
+        [
+          {
+            "node": "Create Advertiser Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Advertiser Tab": {
+      "main": [
+        [
+          {
+            "node": "Write Advertiser Tab Headers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Advertiser Tab Headers": {
+      "main": [
+        [
+          {
+            "node": "Append to Advertiser Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to Advertiser Tab": {
+      "main": [
+        [
+          {
+            "node": "Reply to Invoice Email",
             "type": "main",
             "index": 0
           }
