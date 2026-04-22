@@ -871,7 +871,7 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        3136,
+        3360,
         -288
       ],
       "id": "d6a941eb-373c-4e3d-a3fc-756412dfccf2",
@@ -899,7 +899,6 @@
             "Description": "={{ $('Parse & Validate').all()[$itemIndex].json.row.Description }}",
             "Gross Sale": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Gross Sale'] }}",
             "Discount/Adjustment": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Discount/Adjustment'] }}",
-            "Net Sale": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Net Sale'] }}",
             "Commission Rate": "==IFERROR(VLOOKUP(B2,'Commission Schedule'!A:B,2,FALSE),0.15)",
             "Commission Amount": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Discount/Adjustment'] }}",
             "Payment Terms": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Payment Terms'] }}",
@@ -1000,7 +999,8 @@
               "defaultMatch": false,
               "display": true,
               "type": "string",
-              "canBeUsedToMatch": true
+              "canBeUsedToMatch": true,
+              "removed": true
             },
             {
               "id": "Commission Rate",
@@ -1072,6 +1072,33 @@
         "options": {
           "cellFormat": "USER_ENTERED"
         }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "zmA3lB23Srv15Wt6",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "name": "Write Net Sale Formula",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        3136,
+        -288
+      ],
+      "id": "d202b5d7-bc76-40ae-a8b9-94a4e7e9d23c",
+      "continueOnFail": true,
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ \"https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A/values/\" + encodeURIComponent(\"'\" + $('Prepare Advertiser Tab').item.json.advertiserName + \"'!J2\") + \"?valueInputOption=USER_ENTERED\" }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"values\":[[\"=ARRAYFORMULA(IF(ISBLANK(H2:H), \\\"\\\", H2:H-I2:I-L2:L))\"]]}",
+        "options": {}
       },
       "credentials": {
         "googleSheetsOAuth2Api": {
@@ -1306,7 +1333,7 @@
       "main": [
         [
           {
-            "node": "Append to Advertiser Tab",
+            "node": "Write Net Sale Formula",
             "type": "main",
             "index": 0
           }
@@ -1318,6 +1345,17 @@
         [
           {
             "node": "Reply to Invoice Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Net Sale Formula": {
+      "main": [
+        [
+          {
+            "node": "Append to Advertiser Tab",
             "type": "main",
             "index": 0
           }
