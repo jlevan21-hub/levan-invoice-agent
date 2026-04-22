@@ -762,7 +762,7 @@
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.2,
       "position": [
-        3360,
+        4256,
         -288
       ],
       "id": "9b766d26-5f26-45e2-9719-6e6035b2ea0b",
@@ -786,7 +786,7 @@
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.2,
       "position": [
-        3584,
+        4480,
         -288
       ],
       "id": "427fe83c-f042-4788-9277-c4fe2fdb9974",
@@ -871,7 +871,7 @@
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        3360,
+        4032,
         -288
       ],
       "id": "d6a941eb-373c-4e3d-a3fc-756412dfccf2",
@@ -1098,6 +1098,70 @@
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "{\"values\":[[\"=ARRAYFORMULA(IF(ISBLANK(H2:H), \\\"\\\", H2:H-I2:I-L2:L))\"]]}",
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "zmA3lB23Srv15Wt6",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "name": "Get Advertiser Sheet ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        3360,
+        -288
+      ],
+      "id": "a9cec76e-db23-4476-87e5-cd91df97cf95",
+      "continueOnFail": true,
+      "parameters": {
+        "method": "GET",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A?fields=sheets.properties(sheetId,title)",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "zmA3lB23Srv15Wt6",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "name": "Extract Sheet ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3584,
+        -288
+      ],
+      "id": "0c010332-e1e4-4adc-bf4e-bb8875228fbb",
+      "parameters": {
+        "jsCode": "// Find the numeric sheetId for the advertiser tab by matching its title.\n// We need this to call updateDimensionProperties (which requires sheetId, not name).\nconst advertiserName = $('Prepare Advertiser Tab').item.json.advertiserName;\nconst sheets = $input.first().json.sheets || [];\nconst match = sheets.find(s => s.properties?.title === advertiserName);\nconst advertiserSheetId = match?.properties?.sheetId ?? null;\n\nreturn $input.all().map(item => ({\n  json: {\n    ...item.json,\n    advertiserName,\n    advertiserSheetId\n  }\n}));"
+      }
+    },
+    {
+      "name": "Hide Row 2 on Advertiser Tab",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        3808,
+        -288
+      ],
+      "id": "7f633fdf-a215-4b85-894e-0b1426b46b85",
+      "continueOnFail": true,
+      "parameters": {
+        "method": "POST",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n      requests: [{\n        updateDimensionProperties: {\n          range: {\n            sheetId: $json.advertiserSheetId,\n            dimension: \"ROWS\",\n            startIndex: 1,\n            endIndex: 2\n          },\n          properties: { hiddenByUser: true },\n          fields: \"hiddenByUser\"\n        }\n      }]\n    }) }}",
         "options": {}
       },
       "credentials": {
@@ -1352,6 +1416,39 @@
       ]
     },
     "Write Net Sale Formula": {
+      "main": [
+        [
+          {
+            "node": "Get Advertiser Sheet ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Advertiser Sheet ID": {
+      "main": [
+        [
+          {
+            "node": "Extract Sheet ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Sheet ID": {
+      "main": [
+        [
+          {
+            "node": "Hide Row 2 on Advertiser Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hide Row 2 on Advertiser Tab": {
       "main": [
         [
           {
