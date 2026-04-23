@@ -762,7 +762,7 @@
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.2,
       "position": [
-        4256,
+        2464,
         -288
       ],
       "id": "9b766d26-5f26-45e2-9719-6e6035b2ea0b",
@@ -786,7 +786,7 @@
       "type": "n8n-nodes-base.gmail",
       "typeVersion": 2.2,
       "position": [
-        4480,
+        2688,
         -288
       ],
       "id": "427fe83c-f042-4788-9277-c4fe2fdb9974",
@@ -800,16 +800,16 @@
       }
     },
     {
-      "name": "Prepare Advertiser Tab",
+      "name": "Deduplicate by Advertiser",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         2464,
-        -288
+        100
       ],
-      "id": "a688f4e8-257f-482a-9c58-c2539ad7577a",
+      "id": "5664a6b3-0655-4b1c-85ca-d2320f3cecf3",
       "parameters": {
-        "jsCode": "// Sanitize advertiser name for use as a Google Sheets tab name.\n// Sheet tab rules: max 100 chars, no [ ] * ? : / \\\nreturn $input.all().map((item, i) => {\n  const parseItem = $('Parse & Validate').all()[i];\n  const advertiserRaw = parseItem?.json?.row?.Advertiser || 'Unknown Advertiser';\n  const advertiserName = advertiserRaw\n    .replace(/[\\[\\]*?:\\/\\\\]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .substring(0, 100) || 'Unknown Advertiser';\n  return {\n    json: {\n      ...item.json,\n      advertiserName\n    }\n  };\n});"
+        "jsCode": "// Returns ONE item per unique advertiser.\n// The tab setup nodes (Create, Headers, Formula, Hide) run on these\n// deduplicated items so they only fire once per advertiser, not once per invoice.\nfunction sanitize(name) {\n  return (name || 'Unknown Advertiser')\n    .replace(/[\\[\\]*?:\\/\\\\]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .substring(0, 100) || 'Unknown Advertiser';\n}\n\nconst seen = new Set();\nreturn $input.all()\n  .map(item => ({\n    json: { ...item.json, advertiserName: sanitize(item.json['Advertiser'] || '') }\n  }))\n  .filter(item => {\n    if (seen.has(item.json.advertiserName)) return false;\n    seen.add(item.json.advertiserName);\n    return true;\n  });"
       }
     },
     {
@@ -818,9 +818,9 @@
       "typeVersion": 4.4,
       "position": [
         2688,
-        -288
+        100
       ],
-      "id": "4881e1ac-33e2-404a-80a6-28388f087c82",
+      "id": "8f338fff-883f-4e83-b8f5-cc758e0ed81d",
       "continueOnFail": true,
       "parameters": {
         "method": "POST",
@@ -845,13 +845,13 @@
       "typeVersion": 4.4,
       "position": [
         2912,
-        -288
+        100
       ],
-      "id": "8596791f-325e-467f-8cee-cfa4ad26f589",
+      "id": "36a8059e-0977-4336-b1f4-cc9cd0c63102",
       "continueOnFail": true,
       "parameters": {
         "method": "PUT",
-        "url": "={{ \"https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A/values/\" + encodeURIComponent(\"'\" + $('Prepare Advertiser Tab').item.json.advertiserName + \"'!A1:Q1\") + \"?valueInputOption=USER_ENTERED\" }}",
+        "url": "={{ \"https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A/values/\" + encodeURIComponent(\"'\" + $json.advertiserName + \"'!A1:Q1\") + \"?valueInputOption=USER_ENTERED\" }}",
         "authentication": "predefinedCredentialType",
         "nodeCredentialType": "googleSheetsOAuth2Api",
         "sendBody": true,
@@ -867,14 +867,118 @@
       }
     },
     {
+      "name": "Write Net Sale Formula",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        3136,
+        100
+      ],
+      "id": "bbd750f5-5947-47f3-b5d3-bd8c0840bcdf",
+      "continueOnFail": true,
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ \"https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A/values/\" + encodeURIComponent(\"'\" + $json.advertiserName + \"'!J2\") + \"?valueInputOption=USER_ENTERED\" }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"values\":[[\"=ARRAYFORMULA(IF(ISBLANK(H2:H), \\\"\\\", H2:H-I2:I-L2:L))\"]]}",
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "zmA3lB23Srv15Wt6",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "name": "Get Advertiser Sheet ID",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        3360,
+        100
+      ],
+      "id": "97f8361c-bf58-452e-b517-93cd0c7d8070",
+      "continueOnFail": true,
+      "parameters": {
+        "method": "GET",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A?fields=sheets.properties(sheetId,title)",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "zmA3lB23Srv15Wt6",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "name": "Extract Sheet ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3584,
+        100
+      ],
+      "id": "21813031-3b81-4779-a6cd-3c74c5f355fa",
+      "parameters": {
+        "jsCode": "// Find the numeric sheetId for the advertiser tab.\n// Required by updateDimensionProperties (which uses sheetId, not title).\nconst advertiserName = $json.advertiserName;\nconst sheets = $input.first().json.sheets || [];\nconst match = sheets.find(s => s.properties?.title === advertiserName);\nconst advertiserSheetId = match?.properties?.sheetId ?? null;\n\nreturn $input.all().map(item => ({\n  json: { ...item.json, advertiserName, advertiserSheetId }\n}));"
+      }
+    },
+    {
+      "name": "Hide Row 2 on Advertiser Tab",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        3808,
+        100
+      ],
+      "id": "934a763f-bdb2-476d-9daf-4254d8cdb002",
+      "continueOnFail": true,
+      "parameters": {
+        "method": "POST",
+        "url": "https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A:batchUpdate",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleSheetsOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ requests: [{ updateDimensionProperties: { range: { sheetId: $json.advertiserSheetId, dimension: \"ROWS\", startIndex: 1, endIndex: 2 }, properties: { hiddenByUser: true }, fields: \"hiddenByUser\" } }] }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "zmA3lB23Srv15Wt6",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "name": "Expand All Invoices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4032,
+        100
+      ],
+      "id": "df1d947f-2e68-46c7-bcea-c0b458768da4",
+      "parameters": {
+        "jsCode": "// Tab setup is done. Now re-expand to ALL invoice items so we can\n// append each one to its advertiser tab.\n// We reference the Sheets output (which has all column values + Advertiser).\nfunction sanitize(name) {\n  return (name || 'Unknown Advertiser')\n    .replace(/[\\[\\]*?:\\/\\\\]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim()\n    .substring(0, 100) || 'Unknown Advertiser';\n}\n\nconst sheetsItems = $('Append or update row in sheet').all();\nreturn sheetsItems.map(item => ({\n  json: {\n    ...item.json,\n    advertiserName: sanitize(item.json['Advertiser'] || '')\n  }\n}));"
+      }
+    },
+    {
       "name": "Append to Advertiser Tab",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
       "position": [
-        4032,
-        -288
+        4256,
+        100
       ],
-      "id": "d6a941eb-373c-4e3d-a3fc-756412dfccf2",
+      "id": "8ec0dc4b-cb88-4a89-8584-3e7dbe43cd05",
       "parameters": {
         "operation": "appendOrUpdate",
         "documentId": {
@@ -884,28 +988,28 @@
         },
         "sheetName": {
           "__rl": true,
-          "value": "={{ $('Prepare Advertiser Tab').item.json.advertiserName }}",
+          "value": "={{ $json.advertiserName }}",
           "mode": "name"
         },
         "columns": {
           "mappingMode": "defineBelow",
           "value": {
-            "Invoice Number": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Invoice Number'] }}",
-            "Date Received": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Date Received'] }}",
-            "Vendor Name": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Vendor Name'] }}",
-            "Invoice Date": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Invoice Date'] }}",
-            "Due Date": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Due Date'] }}",
-            "Advertiser": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Advertiser'] }}",
-            "Description": "={{ $('Parse & Validate').all()[$itemIndex].json.row.Description }}",
-            "Gross Sale": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Gross Sale'] }}",
-            "Discount/Adjustment": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Discount/Adjustment'] }}",
+            "Invoice Number": "={{ $json[\"Invoice Number\"] }}",
+            "Date Received": "={{ $json[\"Date Received\"] }}",
+            "Vendor Name": "={{ $json[\"Vendor Name\"] }}",
+            "Invoice Date": "={{ $json[\"Invoice Date\"] }}",
+            "Due Date": "={{ $json[\"Due Date\"] }}",
+            "Advertiser": "={{ $json[\"Advertiser\"] }}",
+            "Description": "={{ $json[\"Description\"] }}",
+            "Gross Sale": "={{ $json[\"Gross Sale\"] }}",
+            "Discount/Adjustment": "={{ $json[\"Discount/Adjustment\"] }}",
             "Commission Rate": "==IFERROR(VLOOKUP(B2,'Commission Schedule'!A:B,2,FALSE),0.15)",
-            "Commission Amount": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Discount/Adjustment'] }}",
-            "Payment Terms": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Payment Terms'] }}",
-            "Status": "={{ $('Parse & Validate').all()[$itemIndex].json.row.Status }}",
-            "File Link": "={{ $json.webViewLink }}",
-            "Sender Email": "={{ $('Parse & Validate').all()[$itemIndex].json.row['Sender Email'] }}",
-            "Confidence": "={{ $('Parse & Validate').all()[$itemIndex].json.row.Confidence }}"
+            "Commission Amount": "={{ $json[\"Commission Amount\"] }}",
+            "Payment Terms": "={{ $json[\"Payment Terms\"] }}",
+            "Status": "={{ $json[\"Status\"] }}",
+            "File Link": "={{ $json[\"File Link\"] }}",
+            "Sender Email": "={{ $json[\"Sender Email\"] }}",
+            "Confidence": "={{ $json[\"Confidence\"] }}"
           },
           "matchingColumns": [
             "Invoice Number"
@@ -993,16 +1097,6 @@
               "canBeUsedToMatch": true
             },
             {
-              "id": "Net Sale",
-              "displayName": "Net Sale",
-              "required": false,
-              "defaultMatch": false,
-              "display": true,
-              "type": "string",
-              "canBeUsedToMatch": true,
-              "removed": true
-            },
-            {
               "id": "Commission Rate",
               "displayName": "Commission Rate",
               "required": false,
@@ -1072,97 +1166,6 @@
         "options": {
           "cellFormat": "USER_ENTERED"
         }
-      },
-      "credentials": {
-        "googleSheetsOAuth2Api": {
-          "id": "zmA3lB23Srv15Wt6",
-          "name": "Google Sheets account"
-        }
-      }
-    },
-    {
-      "name": "Write Net Sale Formula",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [
-        3136,
-        -288
-      ],
-      "id": "d202b5d7-bc76-40ae-a8b9-94a4e7e9d23c",
-      "continueOnFail": true,
-      "parameters": {
-        "method": "PUT",
-        "url": "={{ \"https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A/values/\" + encodeURIComponent(\"'\" + $('Prepare Advertiser Tab').item.json.advertiserName + \"'!J2\") + \"?valueInputOption=USER_ENTERED\" }}",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "googleSheetsOAuth2Api",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "{\"values\":[[\"=ARRAYFORMULA(IF(ISBLANK(H2:H), \\\"\\\", H2:H-I2:I-L2:L))\"]]}",
-        "options": {}
-      },
-      "credentials": {
-        "googleSheetsOAuth2Api": {
-          "id": "zmA3lB23Srv15Wt6",
-          "name": "Google Sheets account"
-        }
-      }
-    },
-    {
-      "name": "Get Advertiser Sheet ID",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [
-        3360,
-        -288
-      ],
-      "id": "a9cec76e-db23-4476-87e5-cd91df97cf95",
-      "continueOnFail": true,
-      "parameters": {
-        "method": "GET",
-        "url": "https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A?fields=sheets.properties(sheetId,title)",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "googleSheetsOAuth2Api",
-        "options": {}
-      },
-      "credentials": {
-        "googleSheetsOAuth2Api": {
-          "id": "zmA3lB23Srv15Wt6",
-          "name": "Google Sheets account"
-        }
-      }
-    },
-    {
-      "name": "Extract Sheet ID",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [
-        3584,
-        -288
-      ],
-      "id": "0c010332-e1e4-4adc-bf4e-bb8875228fbb",
-      "parameters": {
-        "jsCode": "// Find the numeric sheetId for the advertiser tab by matching its title.\n// We need this to call updateDimensionProperties (which requires sheetId, not name).\nconst advertiserName = $('Prepare Advertiser Tab').item.json.advertiserName;\nconst sheets = $input.first().json.sheets || [];\nconst match = sheets.find(s => s.properties?.title === advertiserName);\nconst advertiserSheetId = match?.properties?.sheetId ?? null;\n\nreturn $input.all().map(item => ({\n  json: {\n    ...item.json,\n    advertiserName,\n    advertiserSheetId\n  }\n}));"
-      }
-    },
-    {
-      "name": "Hide Row 2 on Advertiser Tab",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.4,
-      "position": [
-        3808,
-        -288
-      ],
-      "id": "7f633fdf-a215-4b85-894e-0b1426b46b85",
-      "continueOnFail": true,
-      "parameters": {
-        "method": "POST",
-        "url": "https://sheets.googleapis.com/v4/spreadsheets/1PRCJyXPERk62Q0f95Kjlh62wn_oXF5GwAYZqrQNrx8A:batchUpdate",
-        "authentication": "predefinedCredentialType",
-        "nodeCredentialType": "googleSheetsOAuth2Api",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({\n      requests: [{\n        updateDimensionProperties: {\n          range: {\n            sheetId: $json.advertiserSheetId,\n            dimension: \"ROWS\",\n            startIndex: 1,\n            endIndex: 2\n          },\n          properties: { hiddenByUser: true },\n          fields: \"hiddenByUser\"\n        }\n      }]\n    }) }}",
-        "options": {}
       },
       "credentials": {
         "googleSheetsOAuth2Api": {
@@ -1353,7 +1356,12 @@
       "main": [
         [
           {
-            "node": "Prepare Advertiser Tab",
+            "node": "Reply to Invoice Email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Deduplicate by Advertiser",
             "type": "main",
             "index": 0
           }
@@ -1371,7 +1379,7 @@
         ]
       ]
     },
-    "Prepare Advertiser Tab": {
+    "Deduplicate by Advertiser": {
       "main": [
         [
           {
@@ -1398,17 +1406,6 @@
         [
           {
             "node": "Write Net Sale Formula",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Append to Advertiser Tab": {
-      "main": [
-        [
-          {
-            "node": "Reply to Invoice Email",
             "type": "main",
             "index": 0
           }
@@ -1449,6 +1446,17 @@
       ]
     },
     "Hide Row 2 on Advertiser Tab": {
+      "main": [
+        [
+          {
+            "node": "Expand All Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expand All Invoices": {
       "main": [
         [
           {
