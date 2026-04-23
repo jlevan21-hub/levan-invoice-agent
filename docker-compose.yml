@@ -21,6 +21,9 @@ services:
       # on the tunnel host. Without these, OAuth + editor often 404 or 403.
       - N8N_PROXY_HOPS=1
       - N8N_SECURE_COOKIE=false
+      # Allow code nodes up to 120 s before the runner is considered hung.
+      # Default is 30 s — too tight for large multi-page PDF → image conversion.
+      - N8N_RUNNERS_HEARTBEAT_INTERVAL=120
     volumes:
       - n8n_data:/home/node/.n8n
     depends_on:
